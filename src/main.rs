@@ -1,10 +1,8 @@
-use std::{
-    alloc::{alloc, Layout},
-    arch::asm,
-    ffi::c_void,
-    mem,
-};
+pub mod asm;
 
+use std::{arch::asm, mem};
+
+use asm::{asm_launch_runner, asm_return_runner};
 use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
 
 #[repr(C)]
@@ -31,80 +29,50 @@ pub struct Address {
 }
 
 impl Runner {
-    pub fn launch(&mut self, _ctx: &mut Context) {
+    pub fn launch(&mut self, ctx: &mut Context) {
         unsafe {
-            asm! {
-                "add rsp, 8",
-                "mov [rdi], rbx",
-                "mov [rdi + 8], rsp",
-                "mov [rdi + 16], rbp",
-                "mov [rdi + 24], r12",
-                "mov [rdi + 32], r13",
-                "mov [rdi + 40], r14",
-                "mov [rdi + 48], r15",
-                "jmp rax",
-                in("rax") Runner::run
-            };
+            asm_launch_runner(self, ctx);
         }
     }
 
-    fn run(&mut self, _ctx: &mut Context) {
+    fn run(&mut self, ctx: &mut Context) {
+        while self.running {
+            ctx.step(self);
+        }
         unsafe {
-            asm! {
-                "push r14",
-                "mov r14, rdi",
-                "push rbx",
-                "mov rbx, rsi",
-                "cmp byte ptr [rdi + 64], 0",
-                "je 2f",
-                "1:",
-                "mov rdi, rbx",
-                "mov rsi, r14",
-                "call r15",
-                "cmp byte ptr [r14 + 64], 0",
-                "jne 1f",
-                "2:",
-                "mov rsi, rbx",
-                "mov rdi, r14",
-                "mov rbx, [rdi]",
-                "mov rsp, [rdi + 8]",
-                "mov rbp, [rdi + 16]",
-                "mov r12, [rdi + 24]",
-                "mov r13, [rdi + 32]",
-                "mov r14, [rdi + 40]",
-                "mov r15, [rdi + 48]",
-                "ret",
-                in("r15") Context::step
-            };
+            asm_return_runner(self, ctx);
         }
     }
 }
 
 impl Context {
-    pub fn step(&mut self, _runner: &mut Runner) {
-        todo!()
+    #[inline(never)]
+    pub fn step(&mut self, runner: &mut Runner) {
+        println!("Hello world!");
+        runner.running = false;
     }
 }
 
 fn main() {
-    let mut context = Context {
+    let mut ctx = Context {
         regs: [0; 32],
         funcs: Vec::with_capacity(0),
     };
     let mut runner = Runner {
         snapshot: [0; 7],
-        ctx: &mut context,
+        ctx: &mut ctx,
         running: true,
     };
-    store_ret(&mut runner);
-    println!("main = {:?}", main as *const c_void);
-    let new_stack = unsafe { alloc(Layout::new::<[u8; 1024 * 64]>()).add(1024 * 64) };
-    println!("new_stack = {new_stack:?}");
-    println!("Hello before!");
-    execute_vstack(new_stack, || {
-        println!("Hello inside!");
-    });
-    println!("Hello after!");
+    runner.launch(&mut ctx);
+    // store_ret(&mut runner);
+    // println!("main = {:?}", main as *const c_void);
+    // let new_stack = unsafe { alloc(Layout::new::<[u8; 1024 * 64]>()).add(1024 * 64) };
+    // println!("new_stack = {new_stack:?}");
+    // println!("Hello before!");
+    // execute_vstack(new_stack, || {
+    //     println!("Hello inside!");
+    // });
+    // println!("Hello after!");
 }
 
 pub fn execute_vstack(sp: *mut u8, exec: fn()) {
