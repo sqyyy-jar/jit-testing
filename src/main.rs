@@ -6,9 +6,25 @@ use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffe
 
 #[repr(C)]
 pub struct Runner {
+    #[cfg(target_family = "unix")]
     pub snapshot: [usize; 7],
+    #[cfg(target_family = "windows")]
+    pub snapshot: [usize; 9],
     pub ctx: *mut Context,
     pub running: bool,
+}
+
+impl Default for Runner {
+    fn default() -> Self {
+        Self {
+            #[cfg(target_family = "unix")]
+            snapshot: [0; 7],
+            #[cfg(target_family = "windows")]
+            snapshot: [0; 9],
+            ctx: null_mut(),
+            running: true,
+        }
+    }
 }
 
 #[repr(C)]

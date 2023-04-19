@@ -6,6 +6,11 @@ global_asm! {
     include_str!("asm/system_v.asm"),
     run=sym Runner::run
 }
+#[cfg(target_family="windows")]
+global_asm! {
+    include_str!("asm/windows.asm"),
+    run=sym Runner::run
+}
 
 #[allow(improper_ctypes)]
 extern "C" {
