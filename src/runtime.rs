@@ -1,4 +1,10 @@
-use std::ptr::null_mut;
+use std::{
+    alloc::{alloc, dealloc, Layout},
+    mem,
+    ptr::{null, null_mut},
+};
+
+use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
 
 use crate::opcodes::{
     ADD, CALL, DIV, HALT, IDIV, ILOAD, IMUL, IREM, JUMP, JUMPNZ, JUMPZ, LOAD, MEMLOAD, MEMSTORE,
@@ -22,37 +28,6 @@ pub struct Runner {
     pub running: bool,
 }
 
-#[repr(C)]
-pub struct Context {
-    pub regs: [Value; 8],
-    pub pc: *const u16,
-    pub mem: Box<[u8]>,
-    pub funcs: Vec<Func>,
-    pub callstack: Vec<Address>,
-}
-
-impl Default for Context {
-    fn default() -> Self {
-        Self {
-            regs: [Value { uint: 0 }; 8],
-            pc: null_mut(),
-            mem: vec![0; u16::MAX as usize].into_boxed_slice(),
-            funcs: Vec::with_capacity(0),
-            callstack: Vec::new(),
-        }
-    }
-}
-
-pub struct Func {
-    pub addr: Address,
-    pub func: fn(*mut Runner, *mut Context),
-}
-
-pub struct Address {
-    pub native: bool,
-    pub address: *const (),
-}
-
 impl Runner {
     pub fn new(ctx: &mut Context) -> Self {
         Self {
@@ -70,6 +45,74 @@ impl Runner {
             unsafe { &mut *self.ctx }.step(self);
         }
     }
+}
+
+#[repr(C)]
+pub struct Stack<T> {
+    size: usize,
+    bp: *mut T,
+    sp: *mut T,
+}
+
+impl<T> Stack<T> {
+    pub fn new(size: usize) -> Self {
+        let bp = unsafe { (alloc(Layout::array::<T>(size).unwrap()) as *mut T).add(size) };
+        Self { size, bp, sp: bp }
+    }
+
+    pub fn push(&mut self, value: T) {
+        unsafe {
+            self.sp = self.sp.sub(1);
+            *self.sp = value;
+        }
+    }
+
+    pub fn will_underflow(&self) -> bool {
+        self.sp >= self.bp
+    }
+
+    pub fn will_overflow(&self) -> bool {
+        self.sp <= unsafe { self.bp.sub(self.size) }
+    }
+
+    pub fn is_underflown(&self) -> bool {
+        self.sp > self.bp
+    }
+
+    pub fn is_overflown(&self) -> bool {
+        self.sp < unsafe { self.bp.sub(self.size) }
+    }
+}
+
+impl<T: Copy> Stack<T> {
+    pub fn pop(&mut self) -> T {
+        unsafe {
+            let value = *self.sp;
+            self.sp = self.sp.add(1);
+            value
+        }
+    }
+}
+
+impl<T> Drop for Stack<T> {
+    fn drop(&mut self) {
+        unsafe {
+            dealloc(
+                self.bp.sub(self.size) as *mut u8,
+                Layout::array::<T>(self.size).unwrap(),
+            )
+        }
+    }
+}
+
+#[repr(C)]
+pub struct Context {
+    pub regs: [Value; 8],
+    pub pc: *const u16,
+    pub callstack: Stack<Address>,
+    pub mem: Box<[u8]>,
+    pub funcs: Vec<Func>,
+    pub buffers: Vec<ExecutableBuffer>,
 }
 
 impl Context {
@@ -112,10 +155,11 @@ impl Context {
                         };
                     }
                     RETURN => {
-                        let Some(ret_addr) = self.callstack.pop() else {
+                        if self.callstack.will_underflow() {
                             runner.running = false;
                             return;
-                        };
+                        }
+                        let ret_addr = self.callstack.pop();
                         if ret_addr.native {
                             todo!("native");
                         }
@@ -214,6 +258,11 @@ impl Context {
                     eprintln!("Invalid function: 0x{insn:04x}");
                     return;
                 };
+                if self.callstack.will_overflow() {
+                    runner.running = false;
+                    eprintln!("Callstack overflow: 0x{insn:04x}");
+                    return;
+                }
                 if func.addr.native {
                     todo!("native")
                 }
@@ -233,6 +282,50 @@ impl Context {
     }
 }
 
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            regs: [Value { uint: 0 }; 8],
+            pc: null_mut(),
+            callstack: Stack::new(1024 * 8),
+            mem: vec![0; u16::MAX as usize].into_boxed_slice(),
+            funcs: Vec::with_capacity(0),
+            buffers: Vec::with_capacity(0),
+        }
+    }
+}
+
+pub type NativeAccessFunc = fn(*mut Runner, *mut Context);
+
+pub struct Func {
+    pub code: Vec<u16>,
+    pub addr: Address,
+    pub func: NativeAccessFunc,
+    pub buf: ExecutableBuffer,
+}
+
+impl Func {
+    pub fn new(code: Vec<u16>) -> Self {
+        let mut res = Self {
+            code,
+            addr: Address {
+                native: false,
+                address: null(),
+            },
+            func: |_, _| {},
+            buf: ExecutableBuffer::default(),
+        };
+        res.addr.address = res.code.as_ptr() as *const ();
+        res
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Address {
+    pub native: bool,
+    pub address: *const (),
+}
+
 #[inline(always)]
 pub const fn sign_extend<const BITS: usize>(value: u16) -> i64 {
     if ((value >> (BITS - 1)) & 1) != 0 {
@@ -240,4 +333,22 @@ pub const fn sign_extend<const BITS: usize>(value: u16) -> i64 {
     } else {
         value as _
     }
+}
+
+fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
+    let mut ops = Assembler::<X64Relocation>::new().unwrap();
+    let offset = ops.offset();
+    dynasm!(ops
+        ; .arch x64
+        ; mov [rsp - 8], rdi
+        ; movups xmm0, [rsp - 16]
+        ; xor rdi, rdi
+        ; mov [rsp - 8], rdi
+        ; movups [rsp - 16], xmm0
+        ; mov rax, [rsp - 8]
+        ; ret
+    );
+    let buf = ops.finalize().unwrap();
+    let stub = unsafe { mem::transmute(buf.ptr(offset)) };
+    (buf, stub)
 }

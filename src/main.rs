@@ -1,21 +1,28 @@
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("CPU must be 64-bit");
+
 pub mod asm;
 pub mod opcodes;
 pub mod runtime;
 
-use std::{mem, ptr::null_mut};
+use std::mem;
 
 use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
-use runtime::{Context, Runner, Value};
+use opcodes::{__load, __mul, __print, __return};
+use runtime::{Context, Func, Runner};
 
 fn main() {
-    let mut ctx = Context {
-        regs: [Value { uint: 0 }; 8],
-        pc: null_mut(),
-        mem: vec![0; u16::MAX as usize].into_boxed_slice(),
-        funcs: Vec::with_capacity(0),
-        callstack: Vec::new(),
-    };
+    let main = [
+        __load(0, 21),
+        __load(1, 2),
+        __mul(0, 1),
+        __print(0),
+        __return(),
+    ];
+    let mut ctx = Context::default();
     let mut runner = Runner::new(&mut ctx);
+    ctx.funcs.push(Func::new(main.to_vec()));
+    ctx.pc = ctx.funcs[0].addr.address as _;
     runner.run();
 }
 

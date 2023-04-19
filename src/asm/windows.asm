@@ -24,3 +24,4 @@ asm_return_runner:
     mov rbp, [rcx + 56]
     mov rsp, [rcx + 64]
     ret
+

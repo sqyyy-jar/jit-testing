@@ -1,5 +1,6 @@
 .global asm_launch_runner
 .global asm_return_runner
+.global asm_enter_native
 
 asm_launch_runner:
     mov [rdi], rbx
@@ -20,3 +21,16 @@ asm_return_runner:
     mov r14, [rax + 40]
     mov r15, [rax + 48]
     ret
+
+asm_enter_native: // (rdi: *mut Runner, rsi: *mut Context, rdx: *const ())
+    mov [rdi], rbx
+    mov [rdi + 8], rsp
+    mov [rdi + 16], rbp
+    mov [rdi + 24], r12
+    mov [rdi + 32], r13
+    mov [rdi + 40], r14
+    mov [rdi + 48], r15
+    // load mapped registers
+    mov rsp, [rsi + 88]
+    jmp rdx
+
