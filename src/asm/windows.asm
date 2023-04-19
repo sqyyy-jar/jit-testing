@@ -10,7 +10,7 @@ asm_launch_runner:
     mov [rcx + 40], rsi
     mov [rcx + 48], rbx
     mov [rcx + 56], rbp
-    mov [rcx + 56], rsp
+    mov [rcx + 64], rsp
     jmp {run}
 
 asm_return_runner:
@@ -22,5 +22,5 @@ asm_return_runner:
     mov rsi, [rcx + 40]
     mov rbx, [rcx + 48]
     mov rbp, [rcx + 56]
-    mov rsp, [rcx + 56]
+    mov rsp, [rcx + 64]
     ret

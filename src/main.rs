@@ -1,88 +1,22 @@
 pub mod asm;
+pub mod opcodes;
+pub mod runtime;
 
 use std::{mem, ptr::null_mut};
 
 use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
-
-#[repr(C)]
-pub struct Runner {
-    #[cfg(target_family = "unix")]
-    pub snapshot: [usize; 7],
-    #[cfg(target_family = "windows")]
-    pub snapshot: [usize; 9],
-    pub ctx: *mut Context,
-    pub running: bool,
-}
-
-impl Default for Runner {
-    fn default() -> Self {
-        Self {
-            #[cfg(target_family = "unix")]
-            snapshot: [0; 7],
-            #[cfg(target_family = "windows")]
-            snapshot: [0; 9],
-            ctx: null_mut(),
-            running: true,
-        }
-    }
-}
-
-#[repr(C)]
-pub struct Context {
-    pub regs: [u64; 32],
-    pub pc: *mut u16,
-    pub funcs: Vec<Func>,
-    pub callstack: Vec<*mut u16>,
-}
-
-pub struct Func {
-    pub addr: Address,
-    pub func: fn(),
-}
-
-pub struct Address {
-    pub native: bool,
-    pub address: usize,
-}
-
-impl Runner {
-    pub fn launch(&mut self, ctx: &mut Context) {
-        // unsafe {
-        //     asm_launch_runner(self, ctx);
-        // }
-        self.run(ctx);
-    }
-
-    fn run(&mut self, ctx: &mut Context) {
-        while self.running {
-            ctx.step(self);
-        }
-        // unsafe {
-        //     asm_return_runner(self, ctx);
-        // }
-    }
-}
-
-impl Context {
-    pub fn step(&mut self, runner: &mut Runner) {
-        println!("Hello world!");
-        runner.running = false;
-    }
-}
+use runtime::{Context, Runner, Value};
 
 fn main() {
     let mut ctx = Context {
-        regs: [0; 32],
+        regs: [Value { uint: 0 }; 8],
         pc: null_mut(),
+        mem: vec![0; u16::MAX as usize].into_boxed_slice(),
         funcs: Vec::with_capacity(0),
         callstack: Vec::new(),
     };
-    let mut runner = Runner {
-        snapshot: [0; 7],
-        ctx: &mut ctx,
-        running: true,
-    };
-    runner.launch(&mut ctx);
+    let mut runner = Runner::new(&mut ctx);
+    runner.run();
 }
 
 pub fn create_stub() -> (ExecutableBuffer, fn(u64) -> u64) {
