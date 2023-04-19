@@ -1,8 +1,9 @@
 use crate::{Runner, Context};
 use std::arch::global_asm;
 
+#[cfg(target_family="unix")]
 global_asm! {
-    include_str!("extern_asm/system_v.asm"),
+    include_str!("asm/system_v.asm"),
     run=sym Runner::run
 }
 
