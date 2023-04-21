@@ -14,6 +14,8 @@ global_asm! {
 
 #[allow(improper_ctypes)]
 extern "C" {
+    pub(crate) fn asm_snapshot(runner: *mut Runner);
+
     pub(crate) fn asm_launch_runner(runner: *mut Runner, ctx: *mut Context);
 
     pub(crate) fn asm_return_runner(runner: *mut Runner, ctx: *mut Context);

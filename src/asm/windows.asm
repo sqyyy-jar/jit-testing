@@ -1,5 +1,22 @@
+.global asm_snapshot
 .global asm_launch_runner
 .global asm_return_runner
+
+asm_snapshot:
+    mov [rdi], r12
+    mov [rdi + 8], r13
+    mov [rdi + 16], r14
+    mov [rdi + 24], r15
+    mov [rdi + 32], rdi
+    mov [rdi + 40], rsi
+    mov [rdi + 48], rbx
+    mov [rdi + 56], rbp
+    mov [rdi + 64], rsp
+    movups xmm0, [rsp]
+    movups [rdi + 72], xmm0
+    movups xmm0, [rsp + 16]
+    movups [rdi + 88], xmm0
+    ret
 
 asm_launch_runner:
     mov [rcx], r12

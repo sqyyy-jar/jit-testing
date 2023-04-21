@@ -6,9 +6,12 @@ use std::{
 
 use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
 
-use crate::opcodes::{
-    ADD, CALL, DIV, HALT, IDIV, ILOAD, IMUL, IREM, JUMP, JUMPNZ, JUMPZ, LOAD, MEMLOAD, MEMSTORE,
-    MOVE, MUL, NOOP, PRINT, REM, RETURN, SMALLOP, SUB,
+use crate::{
+    asm::asm_snapshot,
+    opcodes::{
+        ADD, CALL, DIV, HALT, IDIV, ILOAD, IMUL, IREM, JUMP, JUMPNZ, JUMPZ, LOAD, MEMLOAD,
+        MEMSTORE, MOVE, MUL, NOOP, PRINT, REM, RETURN, SMALLOP, SUB,
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -19,11 +22,18 @@ pub union Value {
 }
 
 #[repr(C)]
-pub struct Runner {
+#[derive(Default)]
+pub struct Snapshot {
     #[cfg(target_family = "unix")]
-    pub snapshot: [usize; 7],
+    pub regs: [usize; 7],
     #[cfg(target_family = "windows")]
-    pub snapshot: [usize; 9],
+    pub regs: [usize; 9],
+    pub stack_top: [usize; 4],
+}
+
+#[repr(C)]
+pub struct Runner {
+    pub snapshot: Snapshot,
     pub ctx: *mut Context,
     pub running: bool,
 }
@@ -31,16 +41,14 @@ pub struct Runner {
 impl Runner {
     pub fn new(ctx: &mut Context) -> Self {
         Self {
-            #[cfg(target_family = "unix")]
-            snapshot: [0; 7],
-            #[cfg(target_family = "windows")]
-            snapshot: [0; 9],
+            snapshot: Snapshot::default(),
             ctx,
             running: true,
         }
     }
 
     pub fn run(&mut self) {
+        unsafe { asm_snapshot(self) };
         while self.running {
             unsafe { &mut *self.ctx }.step(self);
         }
@@ -316,6 +324,9 @@ impl Func {
             buf: ExecutableBuffer::default(),
         };
         res.addr.address = res.code.as_ptr() as *const ();
+        let (buf, func) = generate_stub(res.addr.address);
+        res.func = func;
+        res.buf = buf;
         res
     }
 }
@@ -338,15 +349,10 @@ pub const fn sign_extend<const BITS: usize>(value: u16) -> i64 {
 fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     let mut ops = Assembler::<X64Relocation>::new().unwrap();
     let offset = ops.offset();
+    #[cfg(all(target_arch = "x86_64", target_family = "unix"))]
     dynasm!(ops
         ; .arch x64
-        ; mov [rsp - 8], rdi
-        ; movups xmm0, [rsp - 16]
-        ; xor rdi, rdi
-        ; mov [rsp - 8], rdi
-        ; movups [rsp - 16], xmm0
-        ; mov rax, [rsp - 8]
-        ; ret
+        ; pop rcx
     );
     let buf = ops.finalize().unwrap();
     let stub = unsafe { mem::transmute(buf.ptr(offset)) };
