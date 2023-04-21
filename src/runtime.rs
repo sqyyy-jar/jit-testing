@@ -352,9 +352,26 @@ fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     let mut ops = Assembler::<X64Relocation>::new().unwrap();
     let offset = ops.offset();
     #[cfg(all(target_arch = "x86_64", target_family = "unix"))]
-    dynasm!(ops
+    dynasm!(ops // (rdi: *Runner, rsi: *Context)
         ; .arch x64
-        ; pop rcx
+        // Save mapped registers
+        ; push 0
+        ; mov rax, QWORD addr as i64
+        ; mov [rsi + 64], rax // virtual address
+        ; mov [rsi + 88], rsp // callstack
+        // Restore snapshot
+        ; mov rbx, [rdi]
+        ; mov rsp, [rdi + 8]
+        ; mov rbp, [rdi + 16]
+        ; mov r12, [rdi + 24]
+        ; mov r13, [rdi + 32]
+        ; mov r14, [rdi + 40]
+        ; mov r15, [rdi + 48]
+        ; movups xmm0, [rdi + 56]
+        ; movups [rsp], xmm0
+        ; movups xmm0, [rdi + 72]
+        ; movups [rsp + 16], xmm0
+        ; ret
     );
     let buf = ops.finalize().unwrap();
     let stub = unsafe { mem::transmute(buf.ptr(offset)) };
