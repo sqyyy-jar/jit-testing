@@ -1,9 +1,12 @@
 .global asm_snapshot
-.global asm_launch_runner
-.global asm_return_runner
-.global asm_enter_native
+.global asm_return_virtual_native
+.global asm_call_virtual_native
+.global asm_return_native_virtual
+//.global asm_launch_runner
+//.global asm_return_runner
+//.global asm_enter_native
 
-asm_snapshot:
+asm_snapshot: // (*Runner)
     mov [rdi], rbx
     mov [rdi + 8], rsp
     mov [rdi + 16], rbp
@@ -17,6 +20,36 @@ asm_snapshot:
     movups [rdi + 72], xmm0
     ret
 
+asm_return_virtual_native: // (rdi: *Runner, rsi: *Context)
+    // Load mapped registers
+    mov rsp, [rsi + 88] // callstack
+    ret
+
+asm_call_virtual_native: // (rdi: *Runner, rsi: *Context, rdx: usize)
+    // Load mapped registers
+    mov rsp, [rsi + 88] // callstack
+    jmp rdx
+
+asm_return_native_virtual: // (rdi: *Runner, rsi: *Context)
+    // Save mapped registers
+    pop rax
+    mov [rsi + 64], rax // return address
+    mov [rsi + 88], rsp // callstack
+    // Restore snapshot
+    mov rbx, [rdi]
+    mov rsp, [rdi + 8]
+    mov rbp, [rdi + 16]
+    mov r12, [rdi + 24]
+    mov r13, [rdi + 32]
+    mov r14, [rdi + 40]
+    mov r15, [rdi + 48]
+    movups xmm0, [rdi + 56]
+    movups [rsp], xmm0
+    movups xmm0, [rdi + 72]
+    movups [rsp + 16], xmm0
+    ret
+
+// Deprecated
 asm_launch_runner:
     mov [rdi], rbx
     mov [rdi + 8], rsp

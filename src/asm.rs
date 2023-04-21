@@ -14,11 +14,21 @@ global_asm! {
 
 #[allow(improper_ctypes)]
 extern "C" {
-    pub(crate) fn asm_snapshot(runner: *mut Runner);
+    #[link_name = "asm_snapshot"]
+    pub(crate) fn snapshot(runner: *mut Runner);
 
-    pub(crate) fn asm_launch_runner(runner: *mut Runner, ctx: *mut Context);
+    #[link_name = "asm_return_virtual_native"]
+    pub(crate) fn return_virtual_native(runner: *mut Runner, ctx: *mut Context);
 
-    pub(crate) fn asm_return_runner(runner: *mut Runner, ctx: *mut Context);
+    #[link_name = "asm_call_virtual_native"]
+    pub(crate) fn call_virtual_native(runner: *mut Runner, ctx: *mut Context, addr: *const ());
 
-    pub(crate) fn asm_enter_native(runner: *mut Runner, ctx: *mut Context, address: *const ());
+    #[link_name = "asm_return_native_virtual"]
+    pub(crate) fn return_native_virtual(runner: *mut Runner, ctx: *mut Context);
+
+    // pub(crate) fn asm_launch_runner(runner: *mut Runner, ctx: *mut Context);
+
+    // pub(crate) fn asm_return_runner(runner: *mut Runner, ctx: *mut Context);
+
+    // pub(crate) fn asm_enter_native(runner: *mut Runner, ctx: *mut Context, address: *const ());
 }

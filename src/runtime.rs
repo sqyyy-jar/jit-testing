@@ -7,7 +7,7 @@ use std::{
 use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
 
 use crate::{
-    asm::asm_snapshot,
+    asm::{call_virtual_native, return_native_virtual, return_virtual_native, snapshot},
     opcodes::{
         ADD, CALL, DIV, HALT, IDIV, ILOAD, IMUL, IREM, JUMP, JUMPNZ, JUMPZ, LOAD, MEMLOAD,
         MEMSTORE, MOVE, MUL, NOOP, PRINT, REM, RETURN, SMALLOP, SUB,
@@ -48,7 +48,7 @@ impl Runner {
     }
 
     pub fn run(&mut self) {
-        unsafe { asm_snapshot(self) };
+        unsafe { snapshot(self) };
         while self.running {
             unsafe { &mut *self.ctx }.step(self);
         }
@@ -117,7 +117,7 @@ impl<T> Drop for Stack<T> {
 pub struct Context {
     pub regs: [Value; 8],
     pub pc: *const u16,
-    pub callstack: Stack<Address>,
+    pub callstack: Stack<*const ()>,
     pub mem: Box<[u8]>,
     pub funcs: Vec<Func>,
     pub buffers: Vec<ExecutableBuffer>,
@@ -168,10 +168,11 @@ impl Context {
                             return;
                         }
                         let ret_addr = self.callstack.pop();
-                        if ret_addr.native {
-                            todo!("native");
+                        if ret_addr.is_null() {
+                            unsafe { return_virtual_native(runner, self) };
+                            return;
                         }
-                        self.pc = ret_addr.address as *const u16;
+                        self.pc = ret_addr as *const u16;
                         return;
                     }
                     ADD => {
@@ -272,13 +273,14 @@ impl Context {
                     return;
                 }
                 if func.addr.native {
-                    todo!("native")
+                    self.callstack.push(unsafe { self.pc.add(1) as *const () });
+                    self.callstack.push(return_native_virtual as *const ());
+                    let addr = func.addr.address;
+                    unsafe { call_virtual_native(runner, self, addr) };
+                    return;
                 }
-                self.callstack.push(Address {
-                    native: false,
-                    address: unsafe { self.pc.add(1) as *const () },
-                });
-                self.pc = unsafe { self.pc.offset(index as isize) };
+                self.callstack.push(unsafe { self.pc.add(1) as *const () });
+                self.pc = func.addr.address as *const u16;
             }
             _ => {
                 runner.running = false;
@@ -295,7 +297,7 @@ impl Default for Context {
         Self {
             regs: [Value { uint: 0 }; 8],
             pc: null_mut(),
-            callstack: Stack::new(1024 * 8),
+            callstack: Stack::new(1024 * 4),
             mem: vec![0; u16::MAX as usize].into_boxed_slice(),
             funcs: Vec::with_capacity(0),
             buffers: Vec::with_capacity(0),
