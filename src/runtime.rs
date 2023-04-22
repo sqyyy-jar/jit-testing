@@ -1,18 +1,37 @@
 use std::{
     alloc::{alloc, dealloc, Layout},
+    collections::HashMap,
     mem,
-    ptr::{null, null_mut},
+    ptr::{drop_in_place, null, null_mut},
 };
 
-use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
+use anyhow::anyhow;
+use dynasmrt::{
+    dynasm, x64::X64Relocation, Assembler, DynasmApi, DynasmLabelApi, ExecutableBuffer,
+};
 
 use crate::{
-    asm::{call_virtual_native, return_native_virtual, return_virtual_native, snapshot},
+    asm::{call_virtual_native, halt, return_native_virtual, return_virtual_native, snapshot},
     opcodes::{
         ADD, CALL, DIV, HALT, IDIV, ILOAD, IMUL, IREM, JUMP, JUMPNZ, JUMPZ, LOAD, MEMLOAD,
         MEMSTORE, MOVE, MUL, NOOP, PRINT, REM, RETURN, SMALLOP, SUB,
     },
 };
+
+macro_rules! asm {
+    ($ops:ident $($t:tt)*) => {
+        dynasm!($ops
+            ; .arch x64
+            ; .alias t0, rax
+            ; .alias t1, rbx
+            ; .alias t2, rcx
+            ; .alias t3, rdx
+            ; .alias ctx, rsi
+            ; .alias runner, rdi
+            $($t)*
+        )
+    }
+}
 
 #[derive(Clone, Copy)]
 pub union Value {
@@ -118,9 +137,8 @@ pub struct Context {
     pub regs: [Value; 8],
     pub pc: *const u16,
     pub callstack: Stack<*const ()>,
-    pub mem: Box<[u8]>,
+    pub mem: *mut u8,
     pub funcs: Vec<Func>,
-    pub buffers: Vec<ExecutableBuffer>,
 }
 
 impl Context {
@@ -141,26 +159,23 @@ impl Context {
                         let dst = insn & 0x7;
                         let src = (insn & 0x38) >> 3;
                         let addr = unsafe { self.regs[src as usize].size };
-                        if self.mem.len() <= addr {
+                        if u16::MAX as usize <= addr {
                             runner.running = false;
                             eprintln!("Invalid memory access: 0x{insn:04x}");
                             return;
                         }
-                        self.regs[dst as usize] =
-                            unsafe { *(self.mem.as_ptr().add(addr) as *const Value) };
+                        self.regs[dst as usize] = unsafe { *(self.mem.add(addr) as *const Value) };
                     }
                     MEMSTORE => {
                         let dst = insn & 0x7;
                         let src = (insn & 0x38) >> 3;
                         let addr = unsafe { self.regs[dst as usize].size };
-                        if self.mem.len() <= addr {
+                        if u16::MAX as usize <= addr {
                             runner.running = false;
                             eprintln!("Invalid memory access: 0x{insn:04x}");
                             return;
                         }
-                        unsafe {
-                            *(self.mem.as_ptr().add(addr) as *mut Value) = self.regs[src as usize]
-                        };
+                        unsafe { *(self.mem.add(addr) as *mut Value) = self.regs[src as usize] };
                     }
                     RETURN => {
                         if self.callstack.will_underflow() {
@@ -254,7 +269,7 @@ impl Context {
             }
             JUMPNZ => {
                 let cond = insn & 0x7;
-                let offset = sign_extend::<9>((insn & 0xFF8) >> 3);
+                let offset = sign_extend::<9>((insn & 0xff8) >> 3);
                 if unsafe { self.regs[cond as usize].uint } != 0 {
                     self.pc = unsafe { self.pc.offset(offset as isize) };
                     return;
@@ -298,9 +313,18 @@ impl Default for Context {
             regs: [Value { uint: 0 }; 8],
             pc: null_mut(),
             callstack: Stack::new(1024 * 4),
-            mem: vec![0; u16::MAX as usize].into_boxed_slice(),
+            mem: unsafe { alloc(Layout::array::<u8>(u16::MAX as usize).unwrap()) },
             funcs: Vec::with_capacity(0),
-            buffers: Vec::with_capacity(0),
+        }
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        unsafe {
+            drop_in_place(&mut self.callstack);
+            dealloc(self.mem, Layout::array::<u8>(u16::MAX as usize).unwrap());
+            drop_in_place(&mut self.funcs);
         }
     }
 }
@@ -331,6 +355,267 @@ impl Func {
         res.buf = buf;
         res
     }
+
+    pub fn compile(&mut self, funcs: &[Func]) -> anyhow::Result<()> {
+        let mut ops = Assembler::<X64Relocation>::new().unwrap();
+        let mut labels = HashMap::with_capacity(0);
+        for (i, insn) in self.code.iter().enumerate() {
+            let opc = *insn & 0xf000;
+            match opc {
+                SMALLOP => {
+                    let op = insn & 0xf00;
+                    match op {
+                        NOOP | MOVE | MEMLOAD | MEMSTORE | RETURN | ADD | SUB | MUL | IMUL
+                        | DIV | IDIV | REM | IREM | PRINT | HALT => {}
+                        _ => {
+                            return Err(anyhow!("Invalid small instruction: 0x{insn:04x}"));
+                        }
+                    }
+                }
+                LOAD | ILOAD => {}
+                JUMP => {
+                    let offset = sign_extend::<12>(insn & 0xfff);
+                    let target = i as isize + offset as isize;
+                    if target < 0 || target >= self.code.len() as isize {
+                        return Err(anyhow!("Invalid jump: 0x{insn:04x}"));
+                    }
+                    if labels.contains_key(&(target as usize)) {
+                        continue;
+                    }
+                    labels.insert(target as usize, ops.new_dynamic_label());
+                }
+                JUMPZ => {
+                    let offset = sign_extend::<9>((insn & 0xff8) >> 3);
+                    let target = i as isize + offset as isize;
+                    if target < 0 || target >= self.code.len() as isize {
+                        return Err(anyhow!("Invalid jump: 0x{insn:04x}"));
+                    }
+                    if labels.contains_key(&(target as usize)) {
+                        continue;
+                    }
+                    labels.insert(target as usize, ops.new_dynamic_label());
+                }
+                JUMPNZ => {
+                    let offset = sign_extend::<9>((insn & 0xff8) >> 3);
+                    let target = i as isize + offset as isize;
+                    if target < 0 || target >= self.code.len() as isize {
+                        return Err(anyhow!("Invalid jump: 0x{insn:04x}"));
+                    }
+                    if labels.contains_key(&(target as usize)) {
+                        continue;
+                    }
+                    labels.insert(target as usize, ops.new_dynamic_label());
+                }
+                CALL => {
+                    let target = i + 1;
+                    if target >= self.code.len() {
+                        return Err(anyhow!("Invalid call: 0x{insn:04x}"));
+                    }
+                    if labels.contains_key(&target) {
+                        continue;
+                    }
+                    labels.insert(target, ops.new_dynamic_label());
+                }
+                _ => {
+                    return Err(anyhow!("Invalid instruction: 0x{insn:04x}"));
+                }
+            }
+        }
+        for (i, insn) in self.code.iter().enumerate() {
+            if let Some(target) = labels.remove(&i) {
+                ops.dynamic_label(target);
+            }
+            let opc = *insn & 0xf000;
+            match opc {
+                SMALLOP => {
+                    let op = insn & 0xf00;
+                    match op {
+                        NOOP => {}
+                        MOVE => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; mov [BYTE ctx + dst], t0
+                            );
+                        }
+                        MEMLOAD => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + 96]
+                                ; mov t1, [BYTE ctx + src]
+                                ; and t1, 0xffff
+                                ; add t0, t1
+                                ; mov t0, [t0]
+                                ; mov [BYTE ctx + dst], t0
+                            );
+                        }
+                        MEMSTORE => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; mov [BYTE ctx + dst], t0
+                            );
+                        }
+                        RETURN => {
+                            asm!(ops
+                                ; ret
+                            );
+                        }
+                        ADD => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; add [BYTE ctx + dst], t0
+                            );
+                        }
+                        SUB => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; sub [BYTE ctx + dst], t0
+                            );
+                        }
+                        MUL => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; mov t3, [BYTE ctx + dst]
+                                ; mul t3
+                                ; mov [BYTE ctx + dst], t0
+                            );
+                        }
+                        IMUL => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; mov t3, [BYTE ctx + dst]
+                                ; imul t0, t3
+                                ; mov [BYTE ctx + dst], t0
+                            );
+                        }
+                        DIV => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; mov t3, [BYTE ctx + dst]
+                                ; div t3
+                                ; mov [BYTE ctx + dst], t0
+                            );
+                        }
+                        IDIV => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; mov t3, [BYTE ctx + dst]
+                                ; idiv t3
+                                ; mov [BYTE ctx + dst], t0
+                            );
+                        }
+                        REM => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; mov t3, [BYTE ctx + dst]
+                                ; div t3
+                                ; mov [BYTE ctx + dst], t3
+                            );
+                        }
+                        IREM => {
+                            let dst = ((insn & 0x7) * 8) as i8;
+                            let src = (((insn & 0x38) >> 3) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                                ; mov t3, [BYTE ctx + dst]
+                                ; idiv t3
+                                ; mov [BYTE ctx + dst], t3
+                            );
+                        }
+                        PRINT => {
+                            let src = insn & 0x7;
+                            // println!("{}", unsafe { self.regs[src as usize].int });
+                        }
+                        HALT => {
+                            asm!(ops
+                                ; mov QWORD [BYTE runner + 96], 0
+                                ; mov t0, QWORD halt as usize as i64
+                                ; jmp t0
+                            );
+                        }
+                        _ => {
+                            return Err(anyhow!("Invalid small instruction: 0x{insn:04x}"));
+                        }
+                    }
+                }
+                LOAD => {
+                    let dst = ((insn & 0x7) * 8) as i8;
+                    let value = ((insn & 0xff8) >> 3) as i32;
+                    asm!(ops
+                        ; mov QWORD [BYTE ctx + dst], value
+                    );
+                }
+                ILOAD => {
+                    let dst = ((insn & 0x7) * 8) as i8;
+                    let value = sign_extend::<9>((insn & 0xff8) >> 3) as i32;
+                    asm!(ops
+                        ; mov QWORD [BYTE ctx + dst], value
+                    );
+                }
+                JUMP => {
+                    let offset = sign_extend::<12>(insn & 0xfff);
+                    let target = (i as isize + offset as isize) as usize;
+                    let label = labels[&target];
+                    asm!(ops
+                        ; jmp =>label
+                    );
+                }
+                JUMPZ => {
+                    let cond = ((insn & 0x7) * 8) as i8;
+                    let offset = sign_extend::<9>((insn & 0xff8) >> 3);
+                    let target = (i as isize + offset as isize) as usize;
+                    let label = labels[&target];
+                    asm!(ops
+                        ; mov t0, [BYTE ctx + cond]
+                        ; test t0, t0
+                        ; jz =>label
+                    );
+                }
+                JUMPNZ => {
+                    let cond = ((insn & 0x7) * 8) as i8;
+                    let offset = sign_extend::<9>((insn & 0xff8) >> 3);
+                    let target = (i as isize + offset as isize) as usize;
+                    let label = labels[&target];
+                    asm!(ops
+                        ; mov t0, [BYTE ctx + cond]
+                        ; test t0, t0
+                        ; jnz =>label
+                    );
+                }
+                CALL => {
+                    let index = insn & 0xfff;
+                    let Some(func) = funcs.get(index as usize) else {
+                        return Err(anyhow!("Invalid function: 0x{insn:04x}"));
+                    };
+                    let addr = func.func;
+                    asm!(ops
+                        ; mov t0, QWORD addr as usize as i64
+                        ; call t0
+                    );
+                }
+                _ => return Err(anyhow!("Invalid instruction: 0x{insn:04x}")),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -352,25 +637,24 @@ fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     let mut ops = Assembler::<X64Relocation>::new().unwrap();
     let offset = ops.offset();
     #[cfg(all(target_arch = "x86_64", target_family = "unix"))]
-    dynasm!(ops // (rdi: *Runner, rsi: *Context)
-        ; .arch x64
+    asm!(ops // -> native (*Runner, *Context)
         // Save mapped registers
         ; push 0
-        ; mov rax, QWORD addr as i64
-        ; mov [rsi + 64], rax // virtual address
-        ; mov [rsi + 88], rsp // callstack
+        ; mov t0, QWORD addr as i64
+        ; mov [BYTE ctx + 64], t0 // virtual address
+        ; mov [BYTE ctx + 88], rsp // callstack
         // Restore snapshot
-        ; mov rbx, [rdi]
-        ; mov rsp, [rdi + 8]
-        ; mov rbp, [rdi + 16]
-        ; mov r12, [rdi + 24]
-        ; mov r13, [rdi + 32]
-        ; mov r14, [rdi + 40]
-        ; mov r15, [rdi + 48]
-        ; movups xmm0, [rdi + 56]
+        ; mov rbx, [runner]
+        ; mov rsp, [BYTE runner + 8]
+        ; mov rbp, [BYTE runner + 16]
+        ; mov r12, [BYTE runner + 24]
+        ; mov r13, [BYTE runner + 32]
+        ; mov r14, [BYTE runner + 40]
+        ; mov r15, [BYTE runner + 48]
+        ; movups xmm0, [BYTE runner + 56]
         ; movups [rsp], xmm0
-        ; movups xmm0, [rdi + 72]
-        ; movups [rsp + 16], xmm0
+        ; movups xmm0, [BYTE runner + 72]
+        ; movups [BYTE rsp + 16], xmm0
         ; ret
     );
     let buf = ops.finalize().unwrap();
