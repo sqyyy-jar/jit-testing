@@ -8,20 +8,33 @@ pub mod runtime;
 use std::mem;
 
 use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
-use opcodes::{__load, __mul, __print, __return};
+use opcodes::{__call, __iload, __imul, __print, __return, __load, __mul};
 use runtime::{Context, Func, Runner};
 
 fn main() {
     let main = [
+        // __load(0, 21),
+        // __load(1, 2),
+        // __mul(0, 1),
+        // __print(0),
+        __call(1),
+        __return(),
+    ];
+    let jitted = [
         __load(0, 21),
         __load(1, 2),
         __mul(0, 1),
+        // __load(0, 42),
         __print(0),
         __return(),
     ];
     let mut ctx = Context::default();
     let mut runner = Runner::new(&mut ctx);
-    ctx.funcs.push(Func::new(main.to_vec()));
+    let main = Func::new(main.to_vec());
+    let jitted = Func::new(jitted.to_vec());
+    ctx.funcs.push(main);
+    ctx.funcs.push(jitted);
+    Func::compile(&mut ctx.funcs, 1).unwrap();
     ctx.pc = ctx.funcs[0].addr.address as _;
     runner.run();
 }

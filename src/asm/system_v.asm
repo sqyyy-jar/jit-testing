@@ -2,6 +2,7 @@
 .global asm_return_virtual_native
 .global asm_call_virtual_native
 .global asm_return_native_virtual
+.global asm_print
 .global asm_halt
 //.global asm_launch_runner
 //.global asm_return_runner
@@ -50,9 +51,23 @@ asm_return_native_virtual: // (rdi: *Runner, rsi: *Context) custom
     movups [rsp + 16], xmm0
     ret
 
-asm_halt: // (rdi: *Runner, rsi: *Context) custom
+asm_print: // (rdi: *Runner, rsi: *Context, rax: i64) custom
     // Save mapped registers
-    mov [rdi + 96], 0 // running
+    mov rsp, [rdi + 8] // stack snapshot
+    // Call
+    push rdi
+    push rsi
+    mov rdi, rax
+    call {print_num}
+    pop rsi
+    pop rdi
+    // Restore mapped registers
+    mov rsp, [rsi + 88] // callstack
+    ret
+
+asm_halt: // (rdi: *Runner, rsi: *Context) custom
+    mov qword ptr [rdi + 96], 0 // running
+    // Save mapped registers
     mov [rsi + 88], rsp // callstack
     // Restore snapshot
     mov rbx, [rdi]

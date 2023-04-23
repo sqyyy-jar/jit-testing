@@ -1,10 +1,11 @@
-use crate::{Context, Runner};
+use crate::{runtime::print_num, Context, Runner};
 use std::arch::global_asm;
 
 #[cfg(all(target_arch = "x86_64", target_family = "unix"))]
 global_asm! {
     include_str!("asm/system_v.asm"),
-    run=sym Runner::run
+    run=sym Runner::run,
+    print_num=sym print_num
 }
 #[cfg(all(target_arch = "x86_64", target_family = "windows"))]
 global_asm! {

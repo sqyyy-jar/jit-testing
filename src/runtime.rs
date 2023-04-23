@@ -2,7 +2,7 @@ use std::{
     alloc::{alloc, dealloc, Layout},
     collections::HashMap,
     mem,
-    ptr::{drop_in_place, null, null_mut},
+    ptr::{null, null_mut},
 };
 
 use anyhow::anyhow;
@@ -158,23 +158,13 @@ impl Context {
                     MEMLOAD => {
                         let dst = insn & 0x7;
                         let src = (insn & 0x38) >> 3;
-                        let addr = unsafe { self.regs[src as usize].size };
-                        if u16::MAX as usize <= addr {
-                            runner.running = false;
-                            eprintln!("Invalid memory access: 0x{insn:04x}");
-                            return;
-                        }
+                        let addr = unsafe { self.regs[src as usize].size } & 0xffff;
                         self.regs[dst as usize] = unsafe { *(self.mem.add(addr) as *const Value) };
                     }
                     MEMSTORE => {
                         let dst = insn & 0x7;
                         let src = (insn & 0x38) >> 3;
-                        let addr = unsafe { self.regs[dst as usize].size };
-                        if u16::MAX as usize <= addr {
-                            runner.running = false;
-                            eprintln!("Invalid memory access: 0x{insn:04x}");
-                            return;
-                        }
+                        let addr = unsafe { self.regs[dst as usize].size } & 0xffff;
                         unsafe { *(self.mem.add(addr) as *mut Value) = self.regs[src as usize] };
                     }
                     RETURN => {
@@ -313,7 +303,7 @@ impl Default for Context {
             regs: [Value { uint: 0 }; 8],
             pc: null_mut(),
             callstack: Stack::new(1024 * 4),
-            mem: unsafe { alloc(Layout::array::<u8>(u16::MAX as usize).unwrap()) },
+            mem: unsafe { alloc(Layout::array::<u8>(u16::MAX as usize + 8).unwrap()) },
             funcs: Vec::with_capacity(0),
         }
     }
@@ -322,9 +312,7 @@ impl Default for Context {
 impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
-            drop_in_place(&mut self.callstack);
             dealloc(self.mem, Layout::array::<u8>(u16::MAX as usize).unwrap());
-            drop_in_place(&mut self.funcs);
         }
     }
 }
@@ -356,10 +344,12 @@ impl Func {
         res
     }
 
-    pub fn compile(&mut self, funcs: &[Func]) -> anyhow::Result<()> {
+    pub fn compile(funcs: &mut [Func], index: usize) -> anyhow::Result<()> {
+        let func = &funcs[index];
         let mut ops = Assembler::<X64Relocation>::new().unwrap();
+        let start = ops.offset();
         let mut labels = HashMap::with_capacity(0);
-        for (i, insn) in self.code.iter().enumerate() {
+        for (i, insn) in func.code.iter().enumerate() {
             let opc = *insn & 0xf000;
             match opc {
                 SMALLOP => {
@@ -376,7 +366,7 @@ impl Func {
                 JUMP => {
                     let offset = sign_extend::<12>(insn & 0xfff);
                     let target = i as isize + offset as isize;
-                    if target < 0 || target >= self.code.len() as isize {
+                    if target < 0 || target >= func.code.len() as isize {
                         return Err(anyhow!("Invalid jump: 0x{insn:04x}"));
                     }
                     if labels.contains_key(&(target as usize)) {
@@ -387,7 +377,7 @@ impl Func {
                 JUMPZ => {
                     let offset = sign_extend::<9>((insn & 0xff8) >> 3);
                     let target = i as isize + offset as isize;
-                    if target < 0 || target >= self.code.len() as isize {
+                    if target < 0 || target >= func.code.len() as isize {
                         return Err(anyhow!("Invalid jump: 0x{insn:04x}"));
                     }
                     if labels.contains_key(&(target as usize)) {
@@ -398,7 +388,7 @@ impl Func {
                 JUMPNZ => {
                     let offset = sign_extend::<9>((insn & 0xff8) >> 3);
                     let target = i as isize + offset as isize;
-                    if target < 0 || target >= self.code.len() as isize {
+                    if target < 0 || target >= func.code.len() as isize {
                         return Err(anyhow!("Invalid jump: 0x{insn:04x}"));
                     }
                     if labels.contains_key(&(target as usize)) {
@@ -408,7 +398,7 @@ impl Func {
                 }
                 CALL => {
                     let target = i + 1;
-                    if target >= self.code.len() {
+                    if target >= func.code.len() {
                         return Err(anyhow!("Invalid call: 0x{insn:04x}"));
                     }
                     if labels.contains_key(&target) {
@@ -421,7 +411,7 @@ impl Func {
                 }
             }
         }
-        for (i, insn) in self.code.iter().enumerate() {
+        for (i, insn) in func.code.iter().enumerate() {
             if let Some(target) = labels.remove(&i) {
                 ops.dynamic_label(target);
             }
@@ -455,8 +445,12 @@ impl Func {
                             let dst = ((insn & 0x7) * 8) as i8;
                             let src = (((insn & 0x38) >> 3) * 8) as i8;
                             asm!(ops
-                                ; mov t0, [BYTE ctx + src]
-                                ; mov [BYTE ctx + dst], t0
+                                ; mov t0, [BYTE ctx + 96]
+                                ; mov t1, [BYTE ctx + dst]
+                                ; and t1, 0xffff
+                                ; add t0, t1
+                                ; mov t1, [BYTE ctx + src]
+                                ; mov [t0], t1
                             );
                         }
                         RETURN => {
@@ -496,7 +490,7 @@ impl Func {
                             asm!(ops
                                 ; mov t0, [BYTE ctx + src]
                                 ; mov t3, [BYTE ctx + dst]
-                                ; imul t0, t3
+                                ; imul t3
                                 ; mov [BYTE ctx + dst], t0
                             );
                         }
@@ -541,8 +535,10 @@ impl Func {
                             );
                         }
                         PRINT => {
-                            let src = insn & 0x7;
-                            // println!("{}", unsafe { self.regs[src as usize].int });
+                            let src = ((insn & 0x7) * 8) as i8;
+                            asm!(ops
+                                ; mov t0, [BYTE ctx + src]
+                            );
                         }
                         HALT => {
                             asm!(ops
@@ -601,11 +597,11 @@ impl Func {
                     );
                 }
                 CALL => {
-                    let index = insn & 0xfff;
-                    let Some(func) = funcs.get(index as usize) else {
+                    let call_index = insn & 0xfff;
+                    let Some(callee) = funcs.get(call_index as usize) else {
                         return Err(anyhow!("Invalid function: 0x{insn:04x}"));
                     };
-                    let addr = func.func;
+                    let addr = callee.func;
                     asm!(ops
                         ; mov t0, QWORD addr as usize as i64
                         ; call t0
@@ -614,6 +610,11 @@ impl Func {
                 _ => return Err(anyhow!("Invalid instruction: 0x{insn:04x}")),
             }
         }
+        let func = &mut funcs[index];
+        let buf = ops.finalize().unwrap();
+        let exec = unsafe { mem::transmute(buf.ptr(start)) };
+        func.buf = buf;
+        func.func = exec;
         Ok(())
     }
 }
@@ -660,4 +661,8 @@ fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     let buf = ops.finalize().unwrap();
     let stub = unsafe { mem::transmute(buf.ptr(offset)) };
     (buf, stub)
+}
+
+pub extern "C" fn print_num(num: i64) {
+    println!("{num}");
 }
