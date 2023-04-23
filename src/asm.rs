@@ -9,7 +9,7 @@ global_asm! {
 #[cfg(all(target_arch = "x86_64", target_family = "windows"))]
 global_asm! {
     include_str!("asm/x64/windows.asm"),
-    run=sym Runner::run
+    print_num=sym print_num
 }
 
 #[allow(improper_ctypes)]
