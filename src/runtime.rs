@@ -11,7 +11,9 @@ use dynasmrt::{
 };
 
 use crate::{
-    asm::{call_virtual_native, halt, return_native_virtual, return_virtual_native, snapshot},
+    asm::{
+        call_virtual_native, halt, print, return_native_virtual, return_virtual_native, snapshot,
+    },
     opcodes::{
         ADD, CALL, DIV, HALT, IDIV, ILOAD, IMUL, IREM, JUMP, JUMPNZ, JUMPZ, LOAD, MEMLOAD,
         MEMSTORE, MOVE, MUL, NOOP, PRINT, REM, RETURN, SMALLOP, SUB,
@@ -248,6 +250,7 @@ impl Context {
             JUMP => {
                 let offset = sign_extend::<12>(insn & 0xfff);
                 self.pc = unsafe { self.pc.offset(offset as isize) };
+                return;
             }
             JUMPZ => {
                 let cond = insn & 0x7;
@@ -286,6 +289,7 @@ impl Context {
                 }
                 self.callstack.push(unsafe { self.pc.add(1) as *const () });
                 self.pc = func.addr.address as *const u16;
+                return;
             }
             _ => {
                 runner.running = false;
@@ -538,6 +542,8 @@ impl Func {
                             let src = ((insn & 0x7) * 8) as i8;
                             asm!(ops
                                 ; mov t0, [BYTE ctx + src]
+                                ; mov t1, QWORD print as usize as i64
+                                ; call t1
                             );
                         }
                         HALT => {
@@ -615,6 +621,8 @@ impl Func {
         let exec = unsafe { mem::transmute(buf.ptr(start)) };
         func.buf = buf;
         func.func = exec;
+        func.addr.native = true;
+        func.addr.address = func.func as *const ();
         Ok(())
     }
 }
@@ -628,7 +636,7 @@ pub struct Address {
 #[inline(always)]
 pub const fn sign_extend<const BITS: usize>(value: u16) -> i64 {
     if ((value >> (BITS - 1)) & 1) != 0 {
-        (value | (!0) << BITS) as i32 as _
+        (value | (!0) << BITS) as i16 as _
     } else {
         value as _
     }

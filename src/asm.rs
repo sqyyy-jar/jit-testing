@@ -27,6 +27,9 @@ extern "C" {
     #[link_name = "asm_return_native_virtual"]
     pub(crate) fn return_native_virtual(runner: *mut Runner, ctx: *mut Context);
 
+    #[link_name = "asm_print"]
+    pub(crate) fn print(runner: *mut Runner, ctx: *mut Context, num: i64);
+
     #[link_name = "asm_halt"]
     pub(crate) fn halt(runner: *mut Runner, ctx: *mut Context);
 

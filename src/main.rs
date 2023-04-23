@@ -5,10 +5,7 @@ pub mod asm;
 pub mod opcodes;
 pub mod runtime;
 
-use std::mem;
-
-use dynasmrt::{dynasm, x64::X64Relocation, Assembler, DynasmApi, ExecutableBuffer};
-use opcodes::{__call, __iload, __imul, __print, __return, __load, __mul};
+use opcodes::{__call, __iload, __imul, __print, __return};
 use runtime::{Context, Func, Runner};
 
 fn main() {
@@ -21,10 +18,9 @@ fn main() {
         __return(),
     ];
     let jitted = [
-        __load(0, 21),
-        __load(1, 2),
-        __mul(0, 1),
-        // __load(0, 42),
+        __iload(0, -21),
+        __iload(1, 2),
+        __imul(0, 1),
         __print(0),
         __return(),
     ];
@@ -37,22 +33,4 @@ fn main() {
     Func::compile(&mut ctx.funcs, 1).unwrap();
     ctx.pc = ctx.funcs[0].addr.address as _;
     runner.run();
-}
-
-pub fn create_stub() -> (ExecutableBuffer, fn(u64) -> u64) {
-    let mut ops = Assembler::<X64Relocation>::new().unwrap();
-    let offset = ops.offset();
-    dynasm!(ops
-        ; .arch x64
-        ; mov [rsp - 8], rdi
-        ; movups xmm0, [rsp - 16]
-        ; xor rdi, rdi
-        ; mov [rsp - 8], rdi
-        ; movups [rsp - 16], xmm0
-        ; mov rax, [rsp - 8]
-        ; ret
-    );
-    let buf = ops.finalize().unwrap();
-    let stub = unsafe { mem::transmute(buf.ptr(offset)) };
-    (buf, stub)
 }
