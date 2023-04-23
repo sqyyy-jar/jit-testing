@@ -6,9 +6,7 @@ use std::{
 };
 
 use anyhow::anyhow;
-use dynasmrt::{
-    dynasm, x64::X64Relocation, Assembler, DynasmApi, DynasmLabelApi, ExecutableBuffer,
-};
+use dynasmrt::{dynasm, Assembler, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 
 use crate::{
     asm::{
@@ -348,9 +346,10 @@ impl Func {
         res
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub fn compile(funcs: &mut [Func], index: usize) -> anyhow::Result<()> {
         let func = &funcs[index];
-        let mut ops = Assembler::<X64Relocation>::new().unwrap();
+        let mut ops = Assembler::<dynasmrt::x64::X64Relocation>::new().unwrap();
         let start = ops.offset();
         let mut labels = HashMap::with_capacity(0);
         for (i, insn) in func.code.iter().enumerate() {
@@ -642,10 +641,14 @@ pub const fn sign_extend<const BITS: usize>(value: u16) -> i64 {
     }
 }
 
+pub extern "C" fn print_num(num: i64) {
+    println!("{num}");
+}
+
+#[cfg(all(target_arch = "x86_64", target_family = "unix"))]
 fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
-    let mut ops = Assembler::<X64Relocation>::new().unwrap();
+    let mut ops = Assembler::<dynasmrt::x64::X64Relocation>::new().unwrap();
     let offset = ops.offset();
-    #[cfg(all(target_arch = "x86_64", target_family = "unix"))]
     asm!(ops // -> native (*Runner, *Context)
         // Save mapped registers
         ; push 0
@@ -671,6 +674,34 @@ fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     (buf, stub)
 }
 
-pub extern "C" fn print_num(num: i64) {
-    println!("{num}");
+#[cfg(all(target_arch = "x86_64", target_family = "windows"))]
+fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
+    let mut ops = Assembler::<dynasmrt::x64::X64Relocation>::new().unwrap();
+    let offset = ops.offset();
+    asm!(ops // -> native (*Runner, *Context)
+        // Save mapped registers
+        ; push 0
+        ; mov t0, QWORD addr as i64
+        ; mov [BYTE ctx + 64], t0 // virtual address
+        ; mov [BYTE ctx + 88], rsp // callstack
+        // Restore snapshot
+        ; mov rcx, runner
+        ; mov rbx, [rcx]
+        ; mov rsp, [BYTE rcx + 8]
+        ; mov rbp, [BYTE rcx + 16]
+        ; mov rsi, [BYTE rcx + 24]
+        ; mov rdi, [BYTE rcx + 32]
+        ; mov r12, [BYTE rcx + 40]
+        ; mov r13, [BYTE rcx + 48]
+        ; mov r14, [BYTE rcx + 56]
+        ; mov r15, [BYTE rcx + 64]
+        ; movups xmm0, [BYTE rcx + 72]
+        ; movups [rsp], xmm0
+        ; movups xmm0, [BYTE rcx + 88]
+        ; movups [BYTE rsp + 16], xmm0
+        ; ret
+    );
+    let buf = ops.finalize().unwrap();
+    let stub = unsafe { mem::transmute(buf.ptr(offset)) };
+    (buf, stub)
 }
