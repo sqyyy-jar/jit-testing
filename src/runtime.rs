@@ -52,24 +52,32 @@ pub struct Snapshot {
 
 #[repr(C)]
 pub struct Runner {
-    pub snapshot: Snapshot,
-    pub ctx: *mut Context,
-    pub running: bool,
+    snapshot: Snapshot,
+    ctx: *mut Context,
+    running: bool,
 }
 
 impl Runner {
-    pub fn new(ctx: &mut Context) -> Self {
-        Self {
-            snapshot: Snapshot::default(),
-            ctx,
-            running: true,
-        }
+    pub fn run(&mut self, ctx: &mut Context) {
+        self.ctx = ctx;
+        self._run();
     }
 
-    pub fn run(&mut self) {
+    #[inline(never)]
+    fn _run(&mut self) {
         unsafe { snapshot(self) };
         while self.running {
             unsafe { &mut *self.ctx }.step(self);
+        }
+    }
+}
+
+impl Default for Runner {
+    fn default() -> Self {
+        Self {
+            snapshot: Snapshot::default(),
+            ctx: null_mut(),
+            running: true,
         }
     }
 }
@@ -183,22 +191,38 @@ impl Context {
                     ADD => {
                         let dst = insn & 0x7;
                         let src = (insn & 0x38) >> 3;
-                        unsafe { self.regs[dst as usize].uint += self.regs[src as usize].uint };
+                        unsafe {
+                            self.regs[dst as usize].uint = self.regs[dst as usize]
+                                .uint
+                                .wrapping_add(self.regs[src as usize].uint)
+                        };
                     }
                     SUB => {
                         let dst = insn & 0x7;
                         let src = (insn & 0x38) >> 3;
-                        unsafe { self.regs[dst as usize].uint -= self.regs[src as usize].uint };
+                        unsafe {
+                            self.regs[dst as usize].uint = self.regs[dst as usize]
+                                .uint
+                                .wrapping_sub(self.regs[src as usize].uint)
+                        };
                     }
                     MUL => {
                         let dst = insn & 0x7;
                         let src = (insn & 0x38) >> 3;
-                        unsafe { self.regs[dst as usize].uint *= self.regs[src as usize].uint };
+                        unsafe {
+                            self.regs[dst as usize].uint = self.regs[dst as usize]
+                                .uint
+                                .wrapping_mul(self.regs[src as usize].uint)
+                        };
                     }
                     IMUL => {
                         let dst = insn & 0x7;
                         let src = (insn & 0x38) >> 3;
-                        unsafe { self.regs[dst as usize].int *= self.regs[src as usize].int };
+                        unsafe {
+                            self.regs[dst as usize].int = self.regs[dst as usize]
+                                .int
+                                .wrapping_mul(self.regs[src as usize].int)
+                        };
                     }
                     DIV => {
                         let dst = insn & 0x7;
@@ -501,9 +525,10 @@ impl Func {
                             let dst = ((insn & 0x7) * 8) as i8;
                             let src = (((insn & 0x38) >> 3) * 8) as i8;
                             asm!(ops
-                                ; mov t0, [BYTE ctx + src]
-                                ; mov t3, [BYTE ctx + dst]
-                                ; div t3
+                                ; mov t0, [BYTE ctx + dst]
+                                ; mov t1, [BYTE ctx + src]
+                                ; xor t3, t3
+                                ; div t1
                                 ; mov [BYTE ctx + dst], t0
                             );
                         }
@@ -511,9 +536,10 @@ impl Func {
                             let dst = ((insn & 0x7) * 8) as i8;
                             let src = (((insn & 0x38) >> 3) * 8) as i8;
                             asm!(ops
-                                ; mov t0, [BYTE ctx + src]
-                                ; mov t3, [BYTE ctx + dst]
-                                ; idiv t3
+                                ; mov t0, [BYTE ctx + dst]
+                                ; mov t1, [BYTE ctx + src]
+                                ; cqo
+                                ; idiv t1
                                 ; mov [BYTE ctx + dst], t0
                             );
                         }
@@ -521,9 +547,10 @@ impl Func {
                             let dst = ((insn & 0x7) * 8) as i8;
                             let src = (((insn & 0x38) >> 3) * 8) as i8;
                             asm!(ops
-                                ; mov t0, [BYTE ctx + src]
-                                ; mov t3, [BYTE ctx + dst]
-                                ; div t3
+                                ; mov t0, [BYTE ctx + dst]
+                                ; mov t1, [BYTE ctx + src]
+                                ; xor t3, t3
+                                ; div t1
                                 ; mov [BYTE ctx + dst], t3
                             );
                         }
@@ -531,9 +558,10 @@ impl Func {
                             let dst = ((insn & 0x7) * 8) as i8;
                             let src = (((insn & 0x38) >> 3) * 8) as i8;
                             asm!(ops
-                                ; mov t0, [BYTE ctx + src]
-                                ; mov t3, [BYTE ctx + dst]
-                                ; idiv t3
+                                ; mov t0, [BYTE ctx + dst]
+                                ; mov t1, [BYTE ctx + src]
+                                ; cqo
+                                ; idiv t1
                                 ; mov [BYTE ctx + dst], t3
                             );
                         }
