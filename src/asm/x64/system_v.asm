@@ -50,8 +50,9 @@ asm_return_native_virtual: // (rdi: *Runner, rsi: *Context) custom
 
 asm_print: // (rdi: *Runner, rsi: *Context, rax: i64) custom
     // Save mapped registers
-    mov rsp, [rdi + 8] // stack snapshot
+    mov [rsi + 88], rsp // callstack
     // Save state
+    mov rsp, [rdi + 8] // stack snapshot
     sub rsp, 24
     mov [rsp], rdi
     mov [rsp + 8], rsi

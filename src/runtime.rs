@@ -415,8 +415,8 @@ impl Func {
             }
         }
         for (i, insn) in func.code.iter().enumerate() {
-            if let Some(target) = labels.remove(&i) {
-                ops.dynamic_label(target);
+            if let Some(target) = labels.get(&i) {
+                ops.dynamic_label(*target);
             }
             let opc = *insn & 0xf000;
             match opc {

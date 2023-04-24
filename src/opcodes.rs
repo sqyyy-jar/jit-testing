@@ -94,12 +94,12 @@ pub fn __jump(offset: i16) -> u16 {
     JUMP | offset as u16 & 0xfff
 }
 
-pub fn __jumpz(dst: u16, value: i16) -> u16 {
-    JUMPZ | dst & 7 | (value as u16 & 0x1ff) << 3
+pub fn __jumpz(dst: u16, offset: i16) -> u16 {
+    JUMPZ | dst & 7 | (offset as u16 & 0x1ff) << 3
 }
 
-pub fn __jumpnz(dst: u16, value: i16) -> u16 {
-    JUMPNZ | dst & 7 | (value as u16 & 0x1ff) << 3
+pub fn __jumpnz(dst: u16, offset: i16) -> u16 {
+    JUMPNZ | dst & 7 | (offset as u16 & 0x1ff) << 3
 }
 
 pub fn __call(index: u16) -> u16 {
