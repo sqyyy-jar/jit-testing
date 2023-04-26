@@ -18,6 +18,7 @@ use crate::{
     },
 };
 
+#[cfg(target_arch = "x86_64")]
 macro_rules! asm {
     ($ops:ident $($t:tt)*) => {
         dynasm!($ops
@@ -33,6 +34,25 @@ macro_rules! asm {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+macro_rules! asm {
+    ($ops:ident $($t:tt)*) => {
+        dynasm!($ops
+            ; .arch aarch64
+            ; .alias lr, x30
+            ; .alias fp, x29
+            ; .alias t0, x0
+            ; .alias t1, x1
+            ; .alias t2, x2
+            ; .alias t3, x3
+            ; .alias ctx, x19
+            ; .alias runner, x20
+            ; .alias cs, x21
+            $($t)*
+        )
+    }
+}
+
 #[derive(Clone, Copy)]
 pub union Value {
     pub uint: u64,
@@ -41,12 +61,14 @@ pub union Value {
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Snapshot {
-    #[cfg(target_family = "unix")]
+    #[cfg(all(target_arch = "x86_64", target_family = "unix"))]
     pub regs: [usize; 7],
-    #[cfg(target_family = "windows")]
+    #[cfg(all(target_arch = "x86_64", target_family = "windows"))]
     pub regs: [usize; 9],
+    #[cfg(target_arch = "aarch64")]
+    pub regs: [usize; 14],
     pub stack_top: [usize; 4],
 }
 
@@ -652,6 +674,11 @@ impl Func {
         func.addr.address = func.func as *const ();
         Ok(())
     }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn compile(funcs: &mut [Func], index: usize) -> anyhow::Result<()> {
+        todo!()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -677,7 +704,7 @@ pub extern "C" fn print_num(num: i64) {
 fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     let mut ops = Assembler::<dynasmrt::x64::X64Relocation>::new().unwrap();
     let offset = ops.offset();
-    asm!(ops // -> native (*Runner, *Context)
+    asm!(ops // (rdi: *Runner, rsi: *Context) custom
         // Save mapped registers
         ; push 0
         ; mov t0, QWORD addr as i64
@@ -706,7 +733,7 @@ fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
 fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     let mut ops = Assembler::<dynasmrt::x64::X64Relocation>::new().unwrap();
     let offset = ops.offset();
-    asm!(ops // -> native (*Runner, *Context)
+    asm!(ops // (rdi: *Runner, rsi: *Context) custom
         // Save mapped registers
         ; push 0
         ; mov t0, QWORD addr as i64
@@ -727,6 +754,44 @@ fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
         ; movups [rsp], xmm0
         ; movups xmm0, [BYTE rcx + 88]
         ; movups [BYTE rsp + 16], xmm0
+        ; ret
+    );
+    let buf = ops.finalize().unwrap();
+    let stub = unsafe { mem::transmute(buf.ptr(offset)) };
+    (buf, stub)
+}
+
+#[cfg(all(target_arch = "aarch64", target_family = "unix"))]
+fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
+    let mut ops = Assembler::<dynasmrt::aarch64::Aarch64Relocation>::new().unwrap();
+    // let vaddr = ops.offset();
+    asm!(ops
+        ; ->addr:
+        ; .qword addr as i64
+    );
+    let offset = ops.offset();
+    asm!(ops // (x20: *Runner, x19: *Context) custom
+        // Save mapped registers
+        ; str xzr, [cs, -8]! // push 0
+        ; adr t0, ->addr
+        ; ldr t0, [t0]
+        ; str t0, [ctx, 0x40] // virtual address
+        ; str cs, [ctx, 0x58] // callstack
+        // Restore snapshot
+        ; mov t0, runner
+        ; ldr x18, [t0]
+        ; ldp x19, x20, [t0, 0x8]
+        ; ldp x21, x22, [t0, 0x18]
+        ; ldp x23, x24, [t0, 0x28]
+        ; ldp x25, x26, [t0, 0x38]
+        ; ldp x27, x28, [t0, 0x48]
+        ; ldp lr, fp, [t0, 0x58]
+        ; ldr t1, [t0, 0x68]
+        ; mov sp, t1
+        ; ldp x1, x2, [t0, 0x70]
+        ; stp x1, x1, [sp]
+        ; ldp x1, x2, [t0, 0x80]
+        ; stp x1, x1, [sp, 0x10]
         ; ret
     );
     let buf = ops.finalize().unwrap();
