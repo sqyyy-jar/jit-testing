@@ -16,7 +16,7 @@ global_asm! {
 #[cfg(all(target_arch = "aarch64", target_family = "unix"))]
 global_asm! {
     include_str!("asm/a64/aapcs64.asm"),
-    // print_num=sym print_num
+    print_num=sym print_num
 }
 
 #[allow(improper_ctypes)]

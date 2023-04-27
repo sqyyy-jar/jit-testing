@@ -5,17 +5,16 @@ pub mod asm;
 pub mod opcodes;
 pub mod runtime;
 
-use opcodes::{__call, __idiv, __iload, __return};
+use opcodes::{__call, __iload, __imul, __print, __return};
 use runtime::{Context, Func, Runner};
 
 fn main() {
     let main = [__call(1), __return()];
     let code = [
-        __iload(0, -20),
-        // __print(0),
+        __iload(0, -21),
         __iload(1, 2),
-        __idiv(0, 1),
-        // __print(0),
+        __imul(0, 1),
+        __print(0),
         __return(),
     ];
     let mut ctx = Context::default();

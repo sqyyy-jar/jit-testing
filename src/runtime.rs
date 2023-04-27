@@ -45,9 +45,6 @@ macro_rules! asm {
             ; .alias t1, x1
             ; .alias t2, x2
             ; .alias t3, x3
-            ; .alias ctx, x19
-            ; .alias runner, x20
-            ; .alias cs, x21
             $($t)*
         )
     }
@@ -450,10 +447,6 @@ impl Func {
                     if target >= func.code.len() {
                         return Err(anyhow!("Invalid call: 0x{insn:04x}"));
                     }
-                    if labels.contains_key(&target) {
-                        continue;
-                    }
-                    labels.insert(target, ops.new_dynamic_label());
                 }
                 _ => {
                     return Err(anyhow!("Invalid instruction: 0x{insn:04x}"));
@@ -677,10 +670,19 @@ impl Func {
 
     #[cfg(target_arch = "aarch64")]
     pub fn compile(funcs: &mut [Func], index: usize) -> anyhow::Result<()> {
+        use std::collections::hash_map::Entry;
+
         let func = &funcs[index];
         let mut ops = Assembler::<dynasmrt::aarch64::Aarch64Relocation>::new().unwrap();
-        let start = ops.offset();
         let mut labels = HashMap::with_capacity(0);
+        #[derive(Default)]
+        struct Uses {
+            branching: bool,
+            print: bool,
+            halt: bool,
+        }
+        let mut uses = Uses::default();
+        let mut relocations = HashMap::with_capacity(0);
         for (i, insn) in func.code.iter().enumerate() {
             let opc = *insn & 0xf000;
             match opc {
@@ -688,7 +690,14 @@ impl Func {
                     let op = insn & 0xf00;
                     match op {
                         NOOP | MOVE | MEMLOAD | MEMSTORE | RETURN | ADD | SUB | MUL | IMUL
-                        | DIV | IDIV | REM | IREM | PRINT | HALT => {}
+                        | DIV | IDIV | REM | IREM => {}
+                        PRINT => {
+                            uses.branching = true;
+                            uses.print = true;
+                        }
+                        HALT => {
+                            uses.halt = true;
+                        }
                         _ => {
                             return Err(anyhow!("Invalid small instruction: 0x{insn:04x}"));
                         }
@@ -729,19 +738,51 @@ impl Func {
                     labels.insert(target as usize, ops.new_dynamic_label());
                 }
                 CALL => {
+                    uses.branching = true;
+                    let call_index = insn & 0xfff;
+                    let Some(callee) = funcs.get(call_index as usize) else {
+                        return Err(anyhow!("Invalid call: 0x{insn:04x}"));
+                    };
+                    let address = &callee.func as *const _ as usize;
+                    if let Entry::Vacant(e) = relocations.entry(address) {
+                        let label = ops.new_dynamic_label();
+                        ops.dynamic_label(label);
+                        e.insert(label);
+                        asm!(ops
+                            ; .qword address as i64
+                        );
+                    }
                     let target = i + 1;
                     if target >= func.code.len() {
                         return Err(anyhow!("Invalid call: 0x{insn:04x}"));
                     }
-                    if labels.contains_key(&target) {
-                        continue;
-                    }
-                    labels.insert(target, ops.new_dynamic_label());
                 }
                 _ => {
                     return Err(anyhow!("Invalid instruction: 0x{insn:04x}"));
                 }
             }
+        }
+        if uses.print {
+            let label = ops.new_dynamic_label();
+            ops.dynamic_label(label);
+            relocations.insert(print as usize, label);
+            asm!(ops
+                ; .qword print as usize as i64
+            );
+        }
+        if uses.halt {
+            let label = ops.new_dynamic_label();
+            ops.dynamic_label(label);
+            relocations.insert(halt as usize, label);
+            asm!(ops
+                ; .qword halt as usize as i64
+            );
+        }
+        let start = ops.offset();
+        if uses.branching {
+            asm!(ops
+                ; str lr, [x21, -0x8]! // push lr
+            );
         }
         for (i, insn) in func.code.iter().enumerate() {
             if let Some(target) = labels.get(&i) {
@@ -762,34 +803,36 @@ impl Func {
                             );
                         }
                         MEMLOAD => {
-                            todo!();
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + 96]
-                            //     ; mov t1, [BYTE ctx + src]
-                            //     ; and t1, 0xffff
-                            //     ; add t0, t1
-                            //     ; mov t0, [t0]
-                            //     ; mov [BYTE ctx + dst], t0
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, 0x60]
+                                ; ldr t1, [x19, src]
+                                ; and t1, t1, 0xffff
+                                ; add t0, t0, t1
+                                ; ldr t0, [t0]
+                                ; str t0, [x19, dst]
+                            );
                         }
                         MEMSTORE => {
-                            todo!();
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + 96]
-                            //     ; mov t1, [BYTE ctx + dst]
-                            //     ; and t1, 0xffff
-                            //     ; add t0, t1
-                            //     ; mov t1, [BYTE ctx + src]
-                            //     ; mov [t0], t1
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, 0x60]
+                                ; ldr t1, [x19, dst]
+                                ; and t1, t1, 0xffff
+                                ; add t0, t0, t1
+                                ; ldr t1, [x19, src]
+                                ; str t1, [t0]
+                            );
                         }
                         RETURN => {
+                            if uses.branching {
+                                asm!(ops
+                                    ; ldr lr, [x21], 0x8
+                                );
+                            }
                             asm!(ops
-                                ; ldr lr, [x21], 0x8
                                 ; ret
                             );
                         }
@@ -813,7 +856,7 @@ impl Func {
                                 ; str t0, [x19, dst]
                             );
                         }
-                        MUL => {
+                        MUL | IMUL => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
                             asm!(ops
@@ -823,16 +866,16 @@ impl Func {
                                 ; str t0, [x19, dst]
                             );
                         }
-                        IMUL => {
-                            let dst = ((insn & 0x7) * 8) as u32;
-                            let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            asm!(ops
-                                ; ldr t0, [x19, dst]
-                                ; ldr t1, [x19, src]
-                                ; mul t0, t0, t1
-                                ; str t0, [x19, dst]
-                            );
-                        }
+                        // IMUL => {
+                        //     let dst = ((insn & 0x7) * 8) as u32;
+                        //     let src = (((insn & 0x38) >> 3) * 8) as u32;
+                        //     asm!(ops
+                        //         ; ldr t0, [x19, dst]
+                        //         ; ldr t1, [x19, src]
+                        //         ; mul t0, t0, t1
+                        //         ; str t0, [x19, dst]
+                        //     );
+                        // }
                         DIV => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
@@ -876,21 +919,24 @@ impl Func {
                             );
                         }
                         PRINT => {
-                            todo!();
                             let src = ((insn & 0x7) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + src]
-                            //     ; mov t1, QWORD print as usize as i64
-                            //     ; call t1
-                            // );
+                            let address = print as usize;
+                            let address = relocations[&address];
+                            asm!(ops
+                                ; ldr t0, [x19, src]
+                                ; adr t1, =>address
+                                ; ldr t1, [t1]
+                                ; blr t1
+                            );
                         }
                         HALT => {
-                            todo!();
-                            // asm!(ops
-                            //     ; mov QWORD [BYTE runner + 96], 0
-                            //     ; mov t0, QWORD halt as usize as i64
-                            //     ; jmp t0
-                            // );
+                            let address = halt as usize;
+                            let address = relocations[&address];
+                            asm!(ops
+                                ; adr t0, =>address
+                                ; ldr t0, [t0]
+                                ; blr t0
+                            );
                         }
                         _ => {
                             return Err(anyhow!("Invalid small instruction: 0x{insn:04x}"));
@@ -902,57 +948,65 @@ impl Func {
                     let value = ((insn & 0xff8) >> 3) as u64;
                     asm!(ops
                         ; mov t0, value
-                        ; str t0, [ctx, dst]
+                        ; str t0, [x19, dst]
                     );
                 }
                 ILOAD => {
                     let dst = ((insn & 0x7) * 8) as u32;
-                    let value = sign_extend::<9>((insn & 0xff8) >> 3) as u64;
-                    asm!(ops
-                        ; mov t0, value
-                        ; str t0, [ctx, dst]
-                    );
+                    let value = sign_extend::<9>((insn & 0xff8) >> 3);
+                    if value >= 0 {
+                        asm!(ops
+                            ; mov t0, value as u64
+                            ; str t0, [x19, dst]
+                        );
+                    } else {
+                        let value = (-value - 1) as u32;
+                        asm!(ops
+                            ; movn t0, value
+                            ; str t0, [x19, dst]
+                        );
+                    }
                 }
                 JUMP => {
                     let offset = sign_extend::<12>(insn & 0xfff);
                     let target = (i as isize + offset as isize) as usize;
                     let label = labels[&target];
-                    // asm!(ops
-                    //     ; jmp =>label
-                    // );
+                    asm!(ops
+                        ; b =>label
+                    );
                 }
                 JUMPZ => {
                     let cond = ((insn & 0x7) * 8) as u32;
                     let offset = sign_extend::<9>((insn & 0xff8) >> 3);
                     let target = (i as isize + offset as isize) as usize;
                     let label = labels[&target];
-                    // asm!(ops
-                    //     ; mov t0, [BYTE ctx + cond]
-                    //     ; test t0, t0
-                    //     ; jz =>label
-                    // );
+                    asm!(ops
+                        ; ldr t0, [x19, cond]
+                        ; cbz t0, =>label
+                    );
                 }
                 JUMPNZ => {
                     let cond = ((insn & 0x7) * 8) as u32;
                     let offset = sign_extend::<9>((insn & 0xff8) >> 3);
                     let target = (i as isize + offset as isize) as usize;
                     let label = labels[&target];
-                    // asm!(ops
-                    //     ; mov t0, [BYTE ctx + cond]
-                    //     ; test t0, t0
-                    //     ; jnz =>label
-                    // );
+                    asm!(ops
+                        ; ldr t0, [x19, cond]
+                        ; cbnz t0, =>label
+                    );
                 }
                 CALL => {
                     let call_index = insn & 0xfff;
                     let Some(callee) = funcs.get(call_index as usize) else {
                         return Err(anyhow!("Invalid function: 0x{insn:04x}"));
                     };
-                    let addr = callee.func;
-                    // asm!(ops
-                    //     ; mov t0, QWORD addr as usize as i64
-                    //     ; call t0
-                    // );
+                    let address = &callee.func as *const _ as usize;
+                    let address = relocations[&address];
+                    asm!(ops
+                        ; adr t0, =>address
+                        ; ldr t0, [t0]
+                        ; blr t0
+                    );
                 }
                 _ => return Err(anyhow!("Invalid instruction: 0x{insn:04x}")),
             }
@@ -1051,7 +1105,6 @@ fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
 #[cfg(all(target_arch = "aarch64", target_family = "unix"))]
 fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     let mut ops = Assembler::<dynasmrt::aarch64::Aarch64Relocation>::new().unwrap();
-    // let vaddr = ops.offset();
     asm!(ops
         ; ->addr:
         ; .qword addr as i64
@@ -1059,13 +1112,13 @@ fn generate_stub(addr: *const ()) -> (ExecutableBuffer, NativeAccessFunc) {
     let offset = ops.offset();
     asm!(ops // (x20: *Runner, x19: *Context) custom
         // Save mapped registers
-        ; str xzr, [cs, -0x8]! // push 0
+        ; str xzr, [x21, -0x8]! // push 0
         ; adr t0, ->addr
         ; ldr t0, [t0]
-        ; str t0, [ctx, 0x40] // virtual address
-        ; str cs, [ctx, 0x58] // callstack
+        ; str t0, [x19, 0x40] // virtual address
+        ; str x21, [x19, 0x58] // callstack
         // Restore snapshot
-        ; mov t0, runner
+        ; mov t0, x20
         ; ldr x18, [t0]
         ; ldp x19, x20, [t0, 0x8]
         ; ldp x21, x22, [t0, 0x18]
