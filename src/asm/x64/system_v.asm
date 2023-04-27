@@ -6,6 +6,7 @@
 .global asm_halt
 
 asm_snapshot: // (rdi: *Runner) system_v
+    // Registers
     mov [rdi], rbx
     mov [rdi + 8], rsp
     mov [rdi + 16], rbp
@@ -13,6 +14,7 @@ asm_snapshot: // (rdi: *Runner) system_v
     mov [rdi + 32], r13
     mov [rdi + 40], r14
     mov [rdi + 48], r15
+    // Stack top
     movups xmm0, [rsp]
     movups [rdi + 56], xmm0
     movups xmm0, [rsp + 16]
@@ -42,6 +44,7 @@ asm_return_native_virtual: // (rdi: *Runner, rsi: *Context) custom
     mov r13, [rdi + 32]
     mov r14, [rdi + 40]
     mov r15, [rdi + 48]
+    // Stack top
     movups xmm0, [rdi + 56]
     movups [rsp], xmm0
     movups xmm0, [rdi + 72]

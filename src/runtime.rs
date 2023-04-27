@@ -762,6 +762,7 @@ impl Func {
                             );
                         }
                         MEMLOAD => {
+                            todo!();
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
                             // asm!(ops
@@ -774,6 +775,7 @@ impl Func {
                             // );
                         }
                         MEMSTORE => {
+                            todo!();
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
                             // asm!(ops
@@ -804,76 +806,77 @@ impl Func {
                         SUB => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + src]
-                            //     ; sub [BYTE ctx + dst], t0
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, dst]
+                                ; ldr t1, [x19, src]
+                                ; sub t0, t0, t1
+                                ; str t0, [x19, dst]
+                            );
                         }
                         MUL => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + src]
-                            //     ; mov t3, [BYTE ctx + dst]
-                            //     ; mul t3
-                            //     ; mov [BYTE ctx + dst], t0
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, dst]
+                                ; ldr t1, [x19, src]
+                                ; mul t0, t0, t1
+                                ; str t0, [x19, dst]
+                            );
                         }
                         IMUL => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + src]
-                            //     ; mov t3, [BYTE ctx + dst]
-                            //     ; imul t3
-                            //     ; mov [BYTE ctx + dst], t0
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, dst]
+                                ; ldr t1, [x19, src]
+                                ; mul t0, t0, t1
+                                ; str t0, [x19, dst]
+                            );
                         }
                         DIV => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + dst]
-                            //     ; mov t1, [BYTE ctx + src]
-                            //     ; xor t3, t3
-                            //     ; div t1
-                            //     ; mov [BYTE ctx + dst], t0
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, dst]
+                                ; ldr t1, [x19, src]
+                                ; udiv t0, t0, t1
+                                ; str t0, [x19, dst]
+                            );
                         }
                         IDIV => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + dst]
-                            //     ; mov t1, [BYTE ctx + src]
-                            //     ; cqo
-                            //     ; idiv t1
-                            //     ; mov [BYTE ctx + dst], t0
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, dst]
+                                ; ldr t1, [x19, src]
+                                ; sdiv t0, t0, t1
+                                ; str t0, [x19, dst]
+                            );
                         }
                         REM => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + dst]
-                            //     ; mov t1, [BYTE ctx + src]
-                            //     ; xor t3, t3
-                            //     ; div t1
-                            //     ; mov [BYTE ctx + dst], t3
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, dst]
+                                ; ldr t1, [x19, src]
+                                ; udiv t2, t0, t1
+                                ; msub t2, t2, t1, t0
+                                ; str t2, [x19, dst]
+                            );
                         }
                         IREM => {
                             let dst = ((insn & 0x7) * 8) as u32;
                             let src = (((insn & 0x38) >> 3) * 8) as u32;
-                            // asm!(ops
-                            //     ; mov t0, [BYTE ctx + dst]
-                            //     ; mov t1, [BYTE ctx + src]
-                            //     ; cqo
-                            //     ; idiv t1
-                            //     ; mov [BYTE ctx + dst], t3
-                            // );
+                            asm!(ops
+                                ; ldr t0, [x19, dst]
+                                ; ldr t1, [x19, src]
+                                ; sdiv t2, t0, t1
+                                ; msub t2, t2, t1, t0
+                                ; str t2, [x19, dst]
+                            );
                         }
                         PRINT => {
+                            todo!();
                             let src = ((insn & 0x7) * 8) as u32;
                             // asm!(ops
                             //     ; mov t0, [BYTE ctx + src]
@@ -882,6 +885,7 @@ impl Func {
                             // );
                         }
                         HALT => {
+                            todo!();
                             // asm!(ops
                             //     ; mov QWORD [BYTE runner + 96], 0
                             //     ; mov t0, QWORD halt as usize as i64
@@ -895,17 +899,19 @@ impl Func {
                 }
                 LOAD => {
                     let dst = ((insn & 0x7) * 8) as u32;
-                    let value = ((insn & 0xff8) >> 3) as i32;
-                    // asm!(ops
-                    //     ; mov QWORD [BYTE ctx + dst], value
-                    // );
+                    let value = ((insn & 0xff8) >> 3) as u64;
+                    asm!(ops
+                        ; mov t0, value
+                        ; str t0, [ctx, dst]
+                    );
                 }
                 ILOAD => {
                     let dst = ((insn & 0x7) * 8) as u32;
-                    let value = sign_extend::<9>((insn & 0xff8) >> 3) as i32;
-                    // asm!(ops
-                    //     ; mov QWORD [BYTE ctx + dst], value
-                    // );
+                    let value = sign_extend::<9>((insn & 0xff8) >> 3) as u64;
+                    asm!(ops
+                        ; mov t0, value
+                        ; str t0, [ctx, dst]
+                    );
                 }
                 JUMP => {
                     let offset = sign_extend::<12>(insn & 0xfff);

@@ -8,19 +8,19 @@
 asm_snapshot: // (x0: *Runner) aapcs64
     // Registers
     str x18, [x0]
-    stp x19, x20, [x0, 8]
-    stp x21, x22, [x0, 24]
-    stp x23, x24, [x0, 40]
-    stp x25, x26, [x0, 56]
-    stp x27, x28, [x0, 72]
-    stp lr, fp, [x0, 88]
+    stp x19, x20, [x0, 0x8]
+    stp x21, x22, [x0, 0x18]
+    stp x23, x24, [x0, 0x28]
+    stp x25, x26, [x0, 0x38]
+    stp x27, x28, [x0, 0x48]
+    stp lr, fp, [x0, 0x58]
     mov x1, sp
-    str x1, [x0, 104]
+    str x1, [x0, 0x68]
     // Stack top
     ldp x1, x2, [sp]
-    stp x1, x2, [x0, 112]
-    ldp x1, x2, [sp, 16]
-    stp x1, x2, [x0, 128]
+    stp x1, x2, [x0, 0x70]
+    ldp x1, x2, [sp, 0x10]
+    stp x1, x2, [x0, 0x80]
     ret
 
 asm_return_virtual_native: // (x0: *Runner, x1: *Context) aapcs64
@@ -39,25 +39,28 @@ asm_call_virtual_native: // (x0: *Runner, x1: *Context, x2: usize) aapcs64
     br x2
 
 asm_return_native_virtual: // (x20: *Runner, x19: *Context) custom
-    mov x0, x20
-    mov x1, x19
+    // Save mapped registers
+    ldr x0, [x21], 0x8
+    str x0, [x19, 0x40]
+    str x21, [x19, 0x58]
     // Registers
+    mov x0, x20
     ldr x18, [x0]
-    // todo
-    stp x19, x20, [x0, 8]
-    stp x21, x22, [x0, 24]
-    stp x23, x24, [x0, 40]
-    stp x25, x26, [x0, 56]
-    stp x27, x28, [x0, 72]
-    stp lr, fp, [x0, 88]
-    mov x1, sp
-    str x1, [x0, 104]
+    ldp x19, x20, [x0, 0x8]
+    ldp x21, x22, [x0, 0x18]
+    ldp x23, x24, [x0, 0x28]
+    ldp x25, x26, [x0, 0x38]
+    ldp x27, x28, [x0, 0x48]
+    ldp lr, fp, [x0, 0x58]
+    ldr x1, [x0, 0x68]
+    mov sp, x1
     // Stack top
-    ldp x1, x2, [sp]
-    stp x1, x2, [x0, 112]
-    ldp x1, x2, [sp, 16]
-    stp x1, x2, [x0, 128]
+    ldp x1, x2, [x0, 0x70]
+    stp x1, x2, [sp]
+    ldp x1, x2, [x0, 0x80]
+    stp x1, x2, [sp, 0x10]
     ret
+
 asm_print:
 asm_halt:
     ret
